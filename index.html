@@ -91,6 +91,7 @@
     <tr><td>Dernière recherche (comparaison aux références)</td><td id="diagRecherche">—</td></tr>
     <tr><td>Mémoire JS utilisée</td><td id="diagMemoire">—</td></tr>
     <tr><td>Références en mémoire</td><td id="diagNbReferences">0</td></tr>
+    <tr><td>Écran maintenu allumé (pendant le chargement du catalogue)</td><td id="diagVeille">inactif</td></tr>
   </table>
   <div class="diagBrut" id="diagFormatBrut"></div>
 </section>
@@ -109,6 +110,10 @@
     linéaire (sachets + boîtes, Vilmorin + Gondian) — <b id="catalogueTotalAttendu">1264</b> produits uniques après
     fusion par référence. Le calcul complet peut prendre plusieurs minutes (plus long sur téléphone que sur PC) ;
     il ne se refait qu'une fois grâce au cache local — vous pouvez mettre en pause et reprendre plus tard.
+    <br><b>Sur téléphone :</b> laissez cet onglet ouvert et à l'écran pendant le calcul — la page essaie
+    d'empêcher automatiquement la mise en veille de l'écran (voir « Écran maintenu allumé » dans les
+    diagnostics), mais ça ne fonctionne que si vous restez sur cette page ; si vous changez d'application ou
+    verrouillez manuellement, le calcul s'arrête et il faudra revenir cliquer sur « Reprendre le catalogue ».
   </div>
   <button id="btnChargerCatalogue" disabled>Charger / reprendre le catalogue</button>
   <button id="btnPauseCatalogue" class="boutonSecondaire" disabled>Mettre en pause</button>
@@ -178,6 +183,7 @@ const diagMemoire = document.getElementById('diagMemoire');
 const diagNbReferences = document.getElementById('diagNbReferences');
 const diagFormatBrut = document.getElementById('diagFormatBrut');
 const infoAppareil = document.getElementById('infoAppareil');
+const diagVeille = document.getElementById('diagVeille');
 
 let pipe = null;
 let refsEnAttente = []; // { dataUrl, inputNom, etat } — references manuelles en attente d'etiquetage
@@ -253,6 +259,58 @@ function dbVider(db) {
     tx.onerror = () => reject(tx.error);
   });
 }
+
+// ---- maintien de l'ecran allume pendant le chargement du catalogue (Wake Lock API) : sur
+// telephone, l'ecran qui se met en veille interrompt/ralentit fortement le calcul en cours.
+// Limite connue et assumee : ceci ne fonctionne que tant que cet onglet reste au premier plan
+// et visible — aucune API web ne peut maintenir un calcul actif si vous changez d'application
+// ou verrouillez le telephone manuellement. Le verrou se relache aussi automatiquement des que
+// l'onglet est mis en arriere-plan (comportement navigateur, pas un bug de cette page) ; on le
+// redemande alors automatiquement au retour au premier plan si le catalogue est toujours en cours. ----
+let wakeLock = null;
+let chargementCatalogueActif = false;
+
+async function demanderVeilleEcran() {
+  if (!('wakeLock' in navigator)) {
+    diagVeille.textContent = 'non supporté par ce navigateur — désactivez la mise en veille manuellement (réglages écran)';
+    return;
+  }
+  diagVeille.textContent = 'demande en cours…';
+  try {
+    // la demande peut rester bloquee indefiniment dans de rares cas (ex. environnement headless) ;
+    // un delai de secours evite que le diagnostic reste coince sur "demande en cours" sans jamais
+    // refleter la realite, sans jamais bloquer le chargement du catalogue qui ne l'attend pas.
+    const wakeLockOuDelai = await Promise.race([
+      navigator.wakeLock.request('screen').then(wl => ({ wl })),
+      new Promise(resolve => setTimeout(() => resolve({ timeout: true }), 4000)),
+    ]);
+    if (wakeLockOuDelai.timeout) {
+      diagVeille.textContent = 'demande sans réponse — désactivez la mise en veille manuellement par précaution';
+      return;
+    }
+    wakeLock = wakeLockOuDelai.wl;
+    diagVeille.textContent = 'actif — laissez cet onglet ouvert et au premier plan';
+    wakeLock.addEventListener('release', () => {
+      diagVeille.textContent = chargementCatalogueActif
+        ? 'relâché par le navigateur (onglet masqué ?) — se redemande au retour au premier plan'
+        : 'inactif';
+    });
+  } catch (e) {
+    diagVeille.textContent = 'échec de la demande (' + (e && e.message ? e.message : e) + ') — désactivez la mise en veille manuellement';
+  }
+}
+function libererVeilleEcran() {
+  if (wakeLock) {
+    wakeLock.release().catch(() => {});
+    wakeLock = null;
+  }
+  diagVeille.textContent = 'inactif';
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && chargementCatalogueActif && !wakeLock) {
+    demanderVeilleEcran();
+  }
+});
 
 // ---- etape 1 : chargement du moteur ----
 btnCharger.onclick = async () => {
@@ -367,6 +425,8 @@ btnChargerCatalogue.onclick = async () => {
   btnChargerCatalogue.disabled = true;
   btnPauseCatalogue.disabled = false;
   statutCatalogue.className = 'statut';
+  chargementCatalogueActif = true;
+  demanderVeilleEcran(); // volontairement pas attendu : ne doit jamais bloquer le calcul si l'API est lente/indisponible
   try {
     if (!dbHandle) dbHandle = await ouvrirDB();
     const catalogue = await chargerCatalogueDepuisJSON();
@@ -389,6 +449,8 @@ btnChargerCatalogue.onclick = async () => {
       btnChargerCatalogue.disabled = false;
       btnPauseCatalogue.disabled = true;
       inputTest.disabled = references.length === 0;
+      chargementCatalogueActif = false;
+      libererVeilleEcran();
       return;
     }
     statutCatalogue.textContent = `${depuisCache} déjà en mémoire (cache local) — ${restants.length} à calculer…`;
@@ -406,6 +468,8 @@ btnChargerCatalogue.onclick = async () => {
         btnChargerCatalogue.textContent = 'Reprendre le catalogue';
         btnPauseCatalogue.disabled = true;
         inputTest.disabled = references.length === 0;
+        chargementCatalogueActif = false;
+        libererVeilleEcran();
         return;
       }
       const e = restants[i];
@@ -442,12 +506,16 @@ btnChargerCatalogue.onclick = async () => {
     btnChargerCatalogue.disabled = false;
     btnPauseCatalogue.disabled = true;
     inputTest.disabled = references.length === 0;
+    chargementCatalogueActif = false;
+    libererVeilleEcran();
     majMemoire();
   } catch (e) {
     statutCatalogue.textContent = 'Erreur : ' + (e && e.message ? e.message : e);
     statutCatalogue.className = 'statut erreur';
     btnChargerCatalogue.disabled = false;
     btnPauseCatalogue.disabled = true;
+    chargementCatalogueActif = false;
+    libererVeilleEcran();
     console.error(e);
   }
 };
