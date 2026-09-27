@@ -380,6 +380,7 @@ btnChargerCatalogue.onclick = async () => {
     }
     const depuisCache = dejaCalcules.length;
     majCompteurReferences();
+    inputTest.disabled = references.length === 0;
 
     const restants = catalogue.filter(e => !dejaParRef.has(e.ref));
     if (restants.length === 0) {
@@ -404,6 +405,7 @@ btnChargerCatalogue.onclick = async () => {
         btnChargerCatalogue.disabled = false;
         btnChargerCatalogue.textContent = 'Reprendre le catalogue';
         btnPauseCatalogue.disabled = true;
+        inputTest.disabled = references.length === 0;
         return;
       }
       const e = restants[i];
@@ -418,6 +420,7 @@ btnChargerCatalogue.onclick = async () => {
         await dbEcrire(dbHandle, record);
         references.push({ id: libelleCatalogue(e), dataUrl: e.img, vecteur, source: 'catalogue', ref: e.ref });
         majCompteurReferences();
+        if (inputTest.disabled) inputTest.disabled = false;
       } catch (err) {
         erreurs++;
         console.error('Échec embedding pour ref', e.ref, err);
