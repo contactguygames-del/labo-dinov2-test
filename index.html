@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Banc d'essai — DINOv2-small (prototype indépendant)</title>
+<style>
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body {
+    margin: 0; font-family: -apple-system, Segoe UI, Roboto, sans-serif;
+    background: #0b0f0c; color: #eee; padding: 14px 14px 40px;
+  }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  h2 { font-size: 14px; color: #7dd3fc; margin: 22px 0 8px; }
+  .avertissement {
+    background: #2a1d0a; border: 1px solid #7c5a1a; color: #f0c674;
+    padding: 10px 12px; border-radius: 10px; font-size: 12.5px; margin: 10px 0 4px;
+  }
+  section { background: #131313; border-radius: 12px; padding: 12px; margin-top: 12px; }
+  button {
+    padding: 13px 16px; border: none; border-radius: 10px; font-size: 14.5px; font-weight: 700;
+    background: #2563eb; color: #fff; width: 100%; margin-top: 6px;
+  }
+  button:disabled { background: #333; color: #777; }
+  input[type="file"] {
+    width: 100%; padding: 10px; background: #1a1a1a; border: 1px dashed #444;
+    border-radius: 8px; color: #ccc; font-size: 13px;
+  }
+  input[type="text"] {
+    width: 100%; padding: 8px; background: #1a1a1a; border: 1px solid #333;
+    border-radius: 6px; color: #eee; font-size: 13px; margin-top: 4px;
+  }
+  table#tableDiag { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  table#tableDiag td { padding: 5px 4px; border-bottom: 1px solid #1f1f1f; }
+  table#tableDiag td:first-child { color: #999; width: 55%; }
+  table#tableDiag td:last-child { color: #7dd3fc; font-weight: 600; text-align: right; }
+  #infoAppareil { font-size: 11.5px; color: #777; line-height: 1.6; margin-bottom: 10px; word-break: break-word; }
+  .statut { font-size: 12.5px; color: #999; margin-top: 8px; }
+  .statut.ok { color: #4ade80; }
+  .statut.erreur { color: #f87171; }
+  .grilleRef {
+    display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px;
+  }
+  .carteRef {
+    width: 90px; background: #1a1a1a; border-radius: 8px; padding: 6px; text-align: center;
+  }
+  .carteRef img { width: 100%; aspect-ratio: 3/4; object-fit: cover; border-radius: 6px; display: block; }
+  .carteRef input { font-size: 11px; padding: 5px 4px; margin-top: 4px; }
+  .carteRef .etatVignette { font-size: 10px; color: #666; margin-top: 3px; }
+  .carteRef.calcule .etatVignette { color: #4ade80; }
+  #resultats { margin-top: 10px; }
+  .carteResultat {
+    display: flex; gap: 10px; align-items: center; background: #1a1a1a; border-radius: 10px;
+    padding: 8px 10px; margin-bottom: 8px; border: 2px solid #2a2a2a;
+  }
+  .carteResultat.top1 { border-color: #22c55e; background: #10231a; }
+  .carteResultat img { width: 52px; aspect-ratio: 3/4; object-fit: cover; border-radius: 6px; flex: 0 0 auto; }
+  .carteResultat .infosResultat { flex: 1 1 auto; min-width: 0; }
+  .carteResultat .rang { font-size: 10.5px; color: #888; font-weight: 700; }
+  .carteResultat.top1 .rang { color: #4ade80; }
+  .carteResultat .nomProduit { font-size: 14px; font-weight: 700; margin: 2px 0; word-break: break-word; }
+  .carteResultat .score { font-size: 12.5px; color: #7dd3fc; }
+  #imgTestApercu { max-width: 140px; max-height: 140px; border-radius: 8px; margin-top: 8px; display: block; }
+  .diagBrut { font-size: 10.5px; color: #666; margin-top: 6px; font-family: monospace; word-break: break-all; }
+</style>
+</head>
+<body>
+
+<h1>🧪 Banc d'essai — reconnaissance visuelle neuronale (DINOv2-small)</h1>
+<div class="avertissement">
+  Prototype 100% indépendant. Ne fait partie d'aucune autre application, ne touche à aucun autre fichier.
+  Sert uniquement à mesurer si DINOv2-small peut distinguer vos packagings. Rien n'est envoyé sur un serveur :
+  tout se calcule dans ce navigateur, et rien n'est conservé après avoir quitté/rechargé la page (aucune sauvegarde).
+</div>
+
+<section id="diagnostics">
+  <h2>Diagnostics</h2>
+  <div id="infoAppareil">Chargement des informations sur l'appareil…</div>
+  <table id="tableDiag">
+    <tr><td>Backend demandé</td><td id="diagBackend">WASM (forcé pour ce premier test)</td></tr>
+    <tr><td>Isolation multi-thread (COOP/COEP)</td><td id="diagIsolation">—</td></tr>
+    <tr><td>WebGPU disponible sur cet appareil</td><td id="diagWebgpu">—</td></tr>
+    <tr><td>Chargement du moteur</td><td id="diagChargement">pas encore chargé</td></tr>
+    <tr><td>Dernier calcul d'empreinte (1 image)</td><td id="diagEmbed">—</td></tr>
+    <tr><td>Dernière recherche (comparaison aux références)</td><td id="diagRecherche">—</td></tr>
+    <tr><td>Mémoire JS utilisée</td><td id="diagMemoire">—</td></tr>
+  </table>
+  <div class="diagBrut" id="diagFormatBrut"></div>
+</section>
+
+<section id="etape1">
+  <h2>1. Charger le moteur de reconnaissance</h2>
+  <div style="font-size:12px; color:#888;">Modèle : onnx-community/dinov2-small-ONNX — variante quantifiée q8 (~24 Mo) — licence Apache 2.0.</div>
+  <button id="btnCharger">Charger le modèle</button>
+  <div class="statut" id="statutModele"></div>
+</section>
+
+<section id="etape2">
+  <h2>2. Références produits (jusqu'à 20)</h2>
+  <input type="file" id="inputReferences" accept="image/*" multiple disabled>
+  <div class="grilleRef" id="listeReferencesAEtiqueter"></div>
+  <button id="btnCalculerReferences" disabled>Calculer les empreintes des références</button>
+  <div class="statut" id="statutReferences"></div>
+</section>
+
+<section id="etape3">
+  <h2>3. Tester une nouvelle photo</h2>
+  <input type="file" id="inputTest" accept="image/*" disabled>
+  <img id="imgTestApercu" style="display:none;">
+  <div class="statut" id="statutTest"></div>
+  <div id="resultats"></div>
+</section>
+
+<canvas id="canvasRedim" style="display:none;"></canvas>
+
+<script type="module">
+import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers';
+
+const MODEL_ID = 'onnx-community/dinov2-small-ONNX';
+const DTYPE = 'q8'; // variante ~24 Mo (model_quantized.onnx / model_int8.onnx) — voir compte-rendu pour le detail des tailles
+
+// ---- refs DOM ----
+const btnCharger = document.getElementById('btnCharger');
+const statutModele = document.getElementById('statutModele');
+const inputReferences = document.getElementById('inputReferences');
+const listeReferencesAEtiqueter = document.getElementById('listeReferencesAEtiqueter');
+const btnCalculerReferences = document.getElementById('btnCalculerReferences');
+const statutReferences = document.getElementById('statutReferences');
+const inputTest = document.getElementById('inputTest');
+const imgTestApercu = document.getElementById('imgTestApercu');
+const statutTest = document.getElementById('statutTest');
+const resultats = document.getElementById('resultats');
+const canvasRedim = document.getElementById('canvasRedim');
+
+const diagBackend = document.getElementById('diagBackend');
+const diagIsolation = document.getElementById('diagIsolation');
+const diagWebgpu = document.getElementById('diagWebgpu');
+const diagChargement = document.getElementById('diagChargement');
+const diagEmbed = document.getElementById('diagEmbed');
+const diagRecherche = document.getElementById('diagRecherche');
+const diagMemoire = document.getElementById('diagMemoire');
+const diagFormatBrut = document.getElementById('diagFormatBrut');
+const infoAppareil = document.getElementById('infoAppareil');
+
+let pipe = null;
+let refsEnAttente = []; // { file, dataUrl, inputNom }
+let references = []; // { id, dataUrl, vecteur: Float32Array normalise }
+let formatBrutAffiche = false;
+
+// ---- diagnostics d'appareil (affiches des le chargement de la page, avant meme de charger le modele) ----
+function majDiagnosticsAppareil() {
+  const ua = navigator.userAgent;
+  const coeurs = navigator.hardwareConcurrency || 'inconnu';
+  const ramApprox = navigator.deviceMemory ? navigator.deviceMemory + ' Go (valeur indicative arrondie par le navigateur)' : 'non communiquee par ce navigateur';
+  infoAppareil.innerHTML = `Appareil : ${ua}<br>Coeurs CPU signales : ${coeurs} · RAM totale approx. : ${ramApprox}`;
+  diagIsolation.textContent = self.crossOriginIsolated ? 'active (WASM multi-thread possible)' : 'inactive -> WASM mono-thread (normal sur une page statique sans en-têtes COOP/COEP)';
+  diagWebgpu.textContent = ('gpu' in navigator) ? 'oui (API présente — non utilisée dans ce premier test)' : 'non détectée par ce navigateur';
+  majMemoire();
+}
+function majMemoire() {
+  if (performance.memory) {
+    diagMemoire.textContent = Math.round(performance.memory.usedJSHeapSize / 1048576) + ' Mo (mesure Chrome non standard, à titre indicatif)';
+  } else {
+    diagMemoire.textContent = 'non mesurable sur ce navigateur';
+  }
+}
+majDiagnosticsAppareil();
+
+// ---- etape 1 : chargement du moteur ----
+btnCharger.onclick = async () => {
+  btnCharger.disabled = true;
+  statutModele.textContent = 'Téléchargement + initialisation du modèle en cours (peut prendre du temps sur réseau mobile, ~24 Mo à télécharger la première fois)…';
+  statutModele.className = 'statut';
+  const t0 = performance.now();
+  try {
+    pipe = await pipeline('image-feature-extraction', MODEL_ID, {
+      device: 'wasm',
+      dtype: DTYPE,
+      progress_callback: (info) => {
+        if (info && info.status === 'progress' && typeof info.progress === 'number') {
+          statutModele.textContent = `Téléchargement : ${info.file || ''} — ${info.progress.toFixed(0)}%`;
+        }
+      },
+    });
+    const t1 = performance.now();
+    const dureeMs = t1 - t0;
+    diagChargement.textContent = dureeMs < 1000 ? `${dureeMs.toFixed(0)} ms` : `${(dureeMs / 1000).toFixed(2)} s`;
+    statutModele.textContent = 'Modèle chargé et prêt.';
+    statutModele.className = 'statut ok';
+    inputReferences.disabled = false;
+    majMemoire();
+  } catch (e) {
+    statutModele.textContent = 'Échec du chargement du modèle : ' + (e && e.message ? e.message : e);
+    statutModele.className = 'statut erreur';
+    btnCharger.disabled = false;
+    console.error(e);
+  }
+};
+
+// ---- redimensionnement + conversion en data URL (limite la taille memoire/traitement sur mobile,
+// le modele redimensionnera de toute facon a 224x224 en interne) ----
+function fichierVersDataUrl(file, maxDim = 800) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      let { width, height } = img;
+      if (width > maxDim || height > maxDim) {
+        const ratio = Math.min(maxDim / width, maxDim / height);
+        width = Math.round(width * ratio);
+        height = Math.round(height * ratio);
+      }
+      canvasRedim.width = width;
+      canvasRedim.height = height;
+      const ctx = canvasRedim.getContext('2d');
+      ctx.drawImage(img, 0, 0, width, height);
+      resolve(canvasRedim.toDataURL('image/jpeg', 0.9));
+      URL.revokeObjectURL(img.src);
+    };
+    img.onerror = reject;
+    img.src = URL.createObjectURL(file);
+  });
+}
+
+// ---- extraction robuste du vecteur d'empreinte, quel que soit le format exact renvoye par le
+// pipeline (deja "pool" en un seul vecteur [1, 384], ou par patch [1, nbPatches, 384]) : si plus
+// d'un token est present on fait nous-memes une moyenne (mean pooling), puis normalisation L2
+// pour que la similarite cosinus se reduise a un simple produit scalaire. Aucune correction ne
+// masque une erreur du modele : cette fonction ne fait QUE reformater la sortie, pas l'interpreter. ----
+function extraireVecteur(output) {
+  const dims = output.dims;
+  const data = output.data;
+  if (!formatBrutAffiche) {
+    diagFormatBrut.textContent = `Format brut renvoyé par le modèle (dims) : [${dims.join(', ')}]`;
+    formatBrutAffiche = true;
+  }
+  let vecteur;
+  if (dims.length <= 2) {
+    vecteur = Array.from(data);
+  } else {
+    const dim = dims[dims.length - 1];
+    const nbTokens = data.length / dim;
+    vecteur = new Array(dim).fill(0);
+    for (let t = 0; t < nbTokens; t++) {
+      for (let d = 0; d < dim; d++) vecteur[d] += data[t * dim + d];
+    }
+    for (let d = 0; d < dim; d++) vecteur[d] /= nbTokens;
+  }
+  let norme = Math.sqrt(vecteur.reduce((s, v) => s + v * v, 0));
+  if (norme === 0) norme = 1;
+  return vecteur.map(v => v / norme);
+}
+
+function similariteCosinus(a, b) {
+  let s = 0;
+  for (let i = 0; i < a.length; i++) s += a[i] * b[i];
+  return s;
+}
+
+// ---- etape 2 : selection + etiquetage des references ----
+inputReferences.onchange = async () => {
+  let fichiers = Array.from(inputReferences.files);
+  let note = '';
+  if (fichiers.length > 20) {
+    note = ` (20 premières images conservées sur ${fichiers.length} sélectionnées — limite recommandée pour ce premier test)`;
+    fichiers = fichiers.slice(0, 20);
+  }
+  statutReferences.textContent = 'Préparation des images…' + note;
+  refsEnAttente = [];
+  listeReferencesAEtiqueter.innerHTML = '';
+  for (const file of fichiers) {
+    const dataUrl = await fichierVersDataUrl(file);
+    const nomDefaut = file.name.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ');
+    const carte = document.createElement('div');
+    carte.className = 'carteRef';
+    carte.innerHTML = `<img src="${dataUrl}"><input type="text" value="${nomDefaut}"><div class="etatVignette">en attente</div>`;
+    listeReferencesAEtiqueter.appendChild(carte);
+    refsEnAttente.push({ dataUrl, inputNom: carte.querySelector('input'), etat: carte.querySelector('.etatVignette') });
+  }
+  statutReferences.textContent = `${refsEnAttente.length} image(s) prête(s) à être étiquetée(s) puis calculée(s).` + note;
+  btnCalculerReferences.disabled = refsEnAttente.length === 0;
+};
+
+btnCalculerReferences.onclick = async () => {
+  btnCalculerReferences.disabled = true;
+  references = [];
+  const t0 = performance.now();
+  for (let i = 0; i < refsEnAttente.length; i++) {
+    const r = refsEnAttente[i];
+    statutReferences.textContent = `Calcul des empreintes… ${i + 1}/${refsEnAttente.length}`;
+    const tDebut = performance.now();
+    const output = await pipe(r.dataUrl);
+    const vecteur = extraireVecteur(output);
+    const dureeUne = performance.now() - tDebut;
+    references.push({ id: r.inputNom.value || `Référence ${i + 1}`, dataUrl: r.dataUrl, vecteur });
+    r.etat.textContent = `calculé (${dureeUne.toFixed(0)} ms)`;
+    r.etat.parentElement.classList.add('calcule');
+    diagEmbed.textContent = `${dureeUne.toFixed(0)} ms (dernière image de ce lot)`;
+    majMemoire();
+  }
+  const dureeTotale = performance.now() - t0;
+  const moyenne = dureeTotale / refsEnAttente.length;
+  statutReferences.textContent = `${references.length} référence(s) calculée(s). Total ${(dureeTotale / 1000).toFixed(2)} s — moyenne ${moyenne.toFixed(0)} ms/image.`;
+  statutReferences.className = 'statut ok';
+  inputTest.disabled = references.length === 0;
+  btnCalculerReferences.disabled = false;
+};
+
+// ---- etape 3 : test d'une nouvelle photo ----
+inputTest.onchange = async () => {
+  const file = inputTest.files[0];
+  if (!file) return;
+  statutTest.textContent = 'Calcul de l\'empreinte de la photo testée…';
+  statutTest.className = 'statut';
+  resultats.innerHTML = '';
+  const dataUrl = await fichierVersDataUrl(file);
+  imgTestApercu.src = dataUrl;
+  imgTestApercu.style.display = 'block';
+
+  const tEmbed0 = performance.now();
+  const output = await pipe(dataUrl);
+  const vecteurTest = extraireVecteur(output);
+  const dureeEmbed = performance.now() - tEmbed0;
+  diagEmbed.textContent = `${dureeEmbed.toFixed(0)} ms (dernière image testée)`;
+
+  const tRech0 = performance.now();
+  const scores = references.map(r => ({ ...r, score: similariteCosinus(vecteurTest, r.vecteur) }));
+  scores.sort((a, b) => b.score - a.score);
+  const dureeRech = performance.now() - tRech0;
+  diagRecherche.textContent = `${dureeRech.toFixed(2)} ms pour ${references.length} référence(s)`;
+  majMemoire();
+
+  const top5 = scores.slice(0, 5);
+  resultats.innerHTML = top5.map((r, i) => `
+    <div class="carteResultat${i === 0 ? ' top1' : ''}">
+      <img src="${r.dataUrl}">
+      <div class="infosResultat">
+        <div class="rang">TOP ${i + 1}</div>
+        <div class="nomProduit">${r.id}</div>
+        <div class="score">similarité : ${(r.score * 100).toFixed(1)}% (${r.score.toFixed(4)})</div>
+      </div>
+    </div>
+  `).join('');
+  statutTest.textContent = `Empreinte calculée en ${dureeEmbed.toFixed(0)} ms, comparée à ${references.length} référence(s) en ${dureeRech.toFixed(2)} ms.`;
+  statutTest.className = 'statut ok';
+};
+</script>
+</body>
+</html>
