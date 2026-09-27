@@ -62,6 +62,11 @@
   .carteResultat .score { font-size: 12.5px; color: #7dd3fc; }
   #imgTestApercu { max-width: 140px; max-height: 140px; border-radius: 8px; margin-top: 8px; display: block; }
   .diagBrut { font-size: 10.5px; color: #666; margin-top: 6px; font-family: monospace; word-break: break-all; }
+  #barreProgression { display: none; background: #1a1a1a; border-radius: 8px; height: 10px; margin-top: 10px; overflow: hidden; }
+  #barreProgressionRemplie { background: #2563eb; height: 100%; width: 0%; transition: width .15s; }
+  .boutonSecondaire { background: #333; }
+  .boutonDanger { background: #7f1d1d; }
+  .noteCatalogue { font-size: 12px; color: #888; }
 </style>
 </head>
 <body>
@@ -70,7 +75,8 @@
 <div class="avertissement">
   Prototype 100% indépendant. Ne fait partie d'aucune autre application, ne touche à aucun autre fichier.
   Sert uniquement à mesurer si DINOv2-small peut distinguer vos packagings. Rien n'est envoyé sur un serveur :
-  tout se calcule dans ce navigateur, et rien n'est conservé après avoir quitté/rechargé la page (aucune sauvegarde).
+  tout se calcule dans ce navigateur. Les empreintes du catalogue sont conservées localement (IndexedDB) pour
+  éviter de tout recalculer à chaque visite ; les références ajoutées manuellement, elles, ne sont pas sauvegardées.
 </div>
 
 <section id="diagnostics">
@@ -84,6 +90,7 @@
     <tr><td>Dernier calcul d'empreinte (1 image)</td><td id="diagEmbed">—</td></tr>
     <tr><td>Dernière recherche (comparaison aux références)</td><td id="diagRecherche">—</td></tr>
     <tr><td>Mémoire JS utilisée</td><td id="diagMemoire">—</td></tr>
+    <tr><td>Références en mémoire</td><td id="diagNbReferences">0</td></tr>
   </table>
   <div class="diagBrut" id="diagFormatBrut"></div>
 </section>
@@ -95,11 +102,26 @@
   <div class="statut" id="statutModele"></div>
 </section>
 
-<section id="etape2">
-  <h2>2. Références produits (jusqu'à 20)</h2>
+<section id="etape2catalogue">
+  <h2>2. Charger le catalogue complet (Vilmorin + Gondian)</h2>
+  <div class="noteCatalogue">
+    Fusion du catalogue Vilmorin 2026 (PDF fournisseur, reçu hier) et du catalogue déjà intégré au créateur de
+    linéaire (sachets + boîtes, Vilmorin + Gondian) — <b id="catalogueTotalAttendu">1264</b> produits uniques après
+    fusion par référence. Le calcul complet peut prendre plusieurs minutes (plus long sur téléphone que sur PC) ;
+    il ne se refait qu'une fois grâce au cache local — vous pouvez mettre en pause et reprendre plus tard.
+  </div>
+  <button id="btnChargerCatalogue" disabled>Charger / reprendre le catalogue</button>
+  <button id="btnPauseCatalogue" class="boutonSecondaire" disabled>Mettre en pause</button>
+  <button id="btnViderCache" class="boutonDanger">Vider le cache local et tout recalculer</button>
+  <div class="statut" id="statutCatalogue"></div>
+  <div id="barreProgression"><div id="barreProgressionRemplie"></div></div>
+</section>
+
+<section id="etape2manuel">
+  <h2>2b. Ajouter des références manuelles (en plus du catalogue, jusqu'à 20)</h2>
   <input type="file" id="inputReferences" accept="image/*" multiple disabled>
   <div class="grilleRef" id="listeReferencesAEtiqueter"></div>
-  <button id="btnCalculerReferences" disabled>Calculer les empreintes des références</button>
+  <button id="btnCalculerReferences" disabled>Calculer les empreintes de ces références manuelles</button>
   <div class="statut" id="statutReferences"></div>
 </section>
 
@@ -118,14 +140,28 @@ import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@huggingface/transfo
 
 const MODEL_ID = 'onnx-community/dinov2-small-ONNX';
 const DTYPE = 'q8'; // variante ~24 Mo (model_quantized.onnx / model_int8.onnx) — voir compte-rendu pour le detail des tailles
+const CATALOGUE_URL = './catalogue_merged.json';
+const DB_NAME = 'labo_dinov2_catalogue';
+const DB_VERSION = 1;
+const STORE_NAME = 'embeddings';
 
 // ---- refs DOM ----
 const btnCharger = document.getElementById('btnCharger');
 const statutModele = document.getElementById('statutModele');
+
+const btnChargerCatalogue = document.getElementById('btnChargerCatalogue');
+const btnPauseCatalogue = document.getElementById('btnPauseCatalogue');
+const btnViderCache = document.getElementById('btnViderCache');
+const statutCatalogue = document.getElementById('statutCatalogue');
+const catalogueTotalAttendu = document.getElementById('catalogueTotalAttendu');
+const barreProgression = document.getElementById('barreProgression');
+const barreProgressionRemplie = document.getElementById('barreProgressionRemplie');
+
 const inputReferences = document.getElementById('inputReferences');
 const listeReferencesAEtiqueter = document.getElementById('listeReferencesAEtiqueter');
 const btnCalculerReferences = document.getElementById('btnCalculerReferences');
 const statutReferences = document.getElementById('statutReferences');
+
 const inputTest = document.getElementById('inputTest');
 const imgTestApercu = document.getElementById('imgTestApercu');
 const statutTest = document.getElementById('statutTest');
@@ -139,13 +175,22 @@ const diagChargement = document.getElementById('diagChargement');
 const diagEmbed = document.getElementById('diagEmbed');
 const diagRecherche = document.getElementById('diagRecherche');
 const diagMemoire = document.getElementById('diagMemoire');
+const diagNbReferences = document.getElementById('diagNbReferences');
 const diagFormatBrut = document.getElementById('diagFormatBrut');
 const infoAppareil = document.getElementById('infoAppareil');
 
 let pipe = null;
-let refsEnAttente = []; // { file, dataUrl, inputNom }
-let references = []; // { id, dataUrl, vecteur: Float32Array normalise }
+let refsEnAttente = []; // { dataUrl, inputNom, etat } — references manuelles en attente d'etiquetage
+let references = []; // { id, dataUrl, vecteur, source: 'catalogue'|'manuel', ref? }
 let formatBrutAffiche = false;
+
+let catalogueBrut = null; // contenu complet de catalogue_merged.json, charge une seule fois
+let dbHandle = null;
+let enPause = false;
+
+function majCompteurReferences() {
+  diagNbReferences.textContent = references.length;
+}
 
 // ---- diagnostics d'appareil (affiches des le chargement de la page, avant meme de charger le modele) ----
 function majDiagnosticsAppareil() {
@@ -165,6 +210,49 @@ function majMemoire() {
   }
 }
 majDiagnosticsAppareil();
+majCompteurReferences();
+
+// ---- IndexedDB : persiste les empreintes du catalogue pour ne pas tout recalculer a chaque
+// visite (essentiel vu le nombre de produits — recalculer ~1264 embeddings a chaque rechargement
+// serait impraticable, surtout sur telephone). Les references manuelles (etape 2b), elles,
+// restent volontairement en memoire seulement, comme dans la version precedente du banc d'essai. ----
+function ouvrirDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, DB_VERSION);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(STORE_NAME)) {
+        db.createObjectStore(STORE_NAME, { keyPath: 'ref' });
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+function dbToutLire(db) {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, 'readonly');
+    const req = tx.objectStore(STORE_NAME).getAll();
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+function dbEcrire(db, record) {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, 'readwrite');
+    tx.objectStore(STORE_NAME).put(record);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+function dbVider(db) {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, 'readwrite');
+    tx.objectStore(STORE_NAME).clear();
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
 
 // ---- etape 1 : chargement du moteur ----
 btnCharger.onclick = async () => {
@@ -188,6 +276,7 @@ btnCharger.onclick = async () => {
     statutModele.textContent = 'Modèle chargé et prêt.';
     statutModele.className = 'statut ok';
     inputReferences.disabled = false;
+    btnChargerCatalogue.disabled = false;
     majMemoire();
   } catch (e) {
     statutModele.textContent = 'Échec du chargement du modèle : ' + (e && e.message ? e.message : e);
@@ -256,12 +345,135 @@ function similariteCosinus(a, b) {
   return s;
 }
 
-// ---- etape 2 : selection + etiquetage des references ----
+// ---- etape 2 : chargement du catalogue complet (Vilmorin PDF + createur de lineaire), avec
+// cache IndexedDB, reprise apres pause, et ETA. Rien n'est masque : les echecs de decodage d'une
+// image individuelle sont comptes et affiches, pas silencieusement ignores. ----
+async function chargerCatalogueDepuisJSON() {
+  if (catalogueBrut) return catalogueBrut;
+  statutCatalogue.textContent = 'Téléchargement du fichier catalogue (~8 Mo)…';
+  const resp = await fetch(CATALOGUE_URL);
+  if (!resp.ok) throw new Error(`Impossible de charger ${CATALOGUE_URL} (HTTP ${resp.status})`);
+  catalogueBrut = await resp.json();
+  catalogueTotalAttendu.textContent = catalogueBrut.length;
+  return catalogueBrut;
+}
+
+function libelleCatalogue(e) {
+  return e.marque ? `${e.nom} (${e.marque})` : e.nom;
+}
+
+btnChargerCatalogue.onclick = async () => {
+  enPause = false;
+  btnChargerCatalogue.disabled = true;
+  btnPauseCatalogue.disabled = false;
+  statutCatalogue.className = 'statut';
+  try {
+    if (!dbHandle) dbHandle = await ouvrirDB();
+    const catalogue = await chargerCatalogueDepuisJSON();
+    const dejaCalcules = await dbToutLire(dbHandle);
+    const dejaParRef = new Map(dejaCalcules.map(r => [r.ref, r]));
+
+    // recharge en memoire ce qui est deja dans le cache (evite les doublons si on reclique)
+    references = references.filter(r => r.source !== 'catalogue');
+    for (const rec of dejaCalcules) {
+      references.push({ id: libelleCatalogue(rec), dataUrl: rec.dataUrl, vecteur: rec.vecteur, source: 'catalogue', ref: rec.ref });
+    }
+    const depuisCache = dejaCalcules.length;
+    majCompteurReferences();
+
+    const restants = catalogue.filter(e => !dejaParRef.has(e.ref));
+    if (restants.length === 0) {
+      statutCatalogue.textContent = `Catalogue déjà complet en cache local : ${depuisCache}/${catalogue.length} produits.`;
+      statutCatalogue.className = 'statut ok';
+      btnChargerCatalogue.disabled = false;
+      btnPauseCatalogue.disabled = true;
+      inputTest.disabled = references.length === 0;
+      return;
+    }
+    statutCatalogue.textContent = `${depuisCache} déjà en mémoire (cache local) — ${restants.length} à calculer…`;
+    barreProgression.style.display = 'block';
+
+    let tempsCumule = 0;
+    let calculesCetteSession = 0;
+    let erreurs = 0;
+    const debutSession = performance.now();
+
+    for (let i = 0; i < restants.length; i++) {
+      if (enPause) {
+        statutCatalogue.textContent = `Pause. ${depuisCache + calculesCetteSession}/${catalogue.length} traités (${erreurs} erreur(s) de décodage). Cliquez sur "Charger / reprendre" pour continuer.`;
+        btnChargerCatalogue.disabled = false;
+        btnChargerCatalogue.textContent = 'Reprendre le catalogue';
+        btnPauseCatalogue.disabled = true;
+        return;
+      }
+      const e = restants[i];
+      try {
+        const t0 = performance.now();
+        const output = await pipe(e.img);
+        const vecteur = extraireVecteur(output);
+        const duree = performance.now() - t0;
+        tempsCumule += duree;
+        calculesCetteSession++;
+        const record = { ref: e.ref, nom: e.nom, marque: e.marque, fam: e.fam, source: e.source, dataUrl: e.img, vecteur };
+        await dbEcrire(dbHandle, record);
+        references.push({ id: libelleCatalogue(e), dataUrl: e.img, vecteur, source: 'catalogue', ref: e.ref });
+        majCompteurReferences();
+      } catch (err) {
+        erreurs++;
+        console.error('Échec embedding pour ref', e.ref, err);
+      }
+      const traites = depuisCache + calculesCetteSession + erreurs;
+      const pct = Math.round((traites / catalogue.length) * 100);
+      barreProgressionRemplie.style.width = pct + '%';
+      const moyenneMs = calculesCetteSession > 0 ? tempsCumule / calculesCetteSession : 0;
+      const restantEstime = moyenneMs * (restants.length - i - 1);
+      const etaTxt = restantEstime > 0 ? ` — ETA ~${Math.ceil(restantEstime / 1000 / 60)} min` : '';
+      statutCatalogue.textContent = `${traites}/${catalogue.length} (${pct}%) — ${moyenneMs.toFixed(0)} ms/image en moyenne${etaTxt}`;
+      if (calculesCetteSession % 10 === 0) majMemoire();
+    }
+    const dureeSession = (performance.now() - debutSession) / 1000;
+    const totalEnMemoire = references.filter(r => r.source === 'catalogue').length;
+    statutCatalogue.textContent = `Catalogue chargé : ${totalEnMemoire}/${catalogue.length} produits en mémoire (${depuisCache} depuis le cache, ${calculesCetteSession} calculés maintenant en ${dureeSession.toFixed(0)} s${erreurs ? ', ' + erreurs + ' erreur(s) de décodage' : ''}).`;
+    statutCatalogue.className = 'statut ok';
+    btnChargerCatalogue.textContent = 'Recharger / vérifier le catalogue';
+    btnChargerCatalogue.disabled = false;
+    btnPauseCatalogue.disabled = true;
+    inputTest.disabled = references.length === 0;
+    majMemoire();
+  } catch (e) {
+    statutCatalogue.textContent = 'Erreur : ' + (e && e.message ? e.message : e);
+    statutCatalogue.className = 'statut erreur';
+    btnChargerCatalogue.disabled = false;
+    btnPauseCatalogue.disabled = true;
+    console.error(e);
+  }
+};
+
+btnPauseCatalogue.onclick = () => {
+  enPause = true;
+  btnPauseCatalogue.disabled = true;
+  btnPauseCatalogue.textContent = 'Pause demandée…';
+  setTimeout(() => { btnPauseCatalogue.textContent = 'Mettre en pause'; }, 1500);
+};
+
+btnViderCache.onclick = async () => {
+  if (!confirm('Vider le cache local du catalogue ? Il faudra tout recalculer (plusieurs minutes).')) return;
+  if (!dbHandle) dbHandle = await ouvrirDB();
+  await dbVider(dbHandle);
+  references = references.filter(r => r.source !== 'catalogue');
+  majCompteurReferences();
+  statutCatalogue.textContent = 'Cache local vidé. Cliquez sur "Charger / reprendre" pour tout recalculer.';
+  statutCatalogue.className = 'statut';
+  barreProgressionRemplie.style.width = '0%';
+  btnChargerCatalogue.textContent = 'Charger / reprendre le catalogue';
+};
+
+// ---- etape 2b : selection + etiquetage des references manuelles (en plus du catalogue) ----
 inputReferences.onchange = async () => {
   let fichiers = Array.from(inputReferences.files);
   let note = '';
   if (fichiers.length > 20) {
-    note = ` (20 premières images conservées sur ${fichiers.length} sélectionnées — limite recommandée pour ce premier test)`;
+    note = ` (20 premières images conservées sur ${fichiers.length} sélectionnées — limite recommandée pour les références manuelles)`;
     fichiers = fichiers.slice(0, 20);
   }
   statutReferences.textContent = 'Préparation des images…' + note;
@@ -282,7 +494,9 @@ inputReferences.onchange = async () => {
 
 btnCalculerReferences.onclick = async () => {
   btnCalculerReferences.disabled = true;
-  references = [];
+  // ne retire QUE les anciennes references manuelles : le catalogue (etape 2), deja calcule,
+  // n'est jamais efface par cette etape.
+  references = references.filter(r => r.source === 'catalogue');
   const t0 = performance.now();
   for (let i = 0; i < refsEnAttente.length; i++) {
     const r = refsEnAttente[i];
@@ -291,21 +505,24 @@ btnCalculerReferences.onclick = async () => {
     const output = await pipe(r.dataUrl);
     const vecteur = extraireVecteur(output);
     const dureeUne = performance.now() - tDebut;
-    references.push({ id: r.inputNom.value || `Référence ${i + 1}`, dataUrl: r.dataUrl, vecteur });
+    references.push({ id: r.inputNom.value || `Référence ${i + 1}`, dataUrl: r.dataUrl, vecteur, source: 'manuel' });
     r.etat.textContent = `calculé (${dureeUne.toFixed(0)} ms)`;
     r.etat.parentElement.classList.add('calcule');
     diagEmbed.textContent = `${dureeUne.toFixed(0)} ms (dernière image de ce lot)`;
+    majCompteurReferences();
     majMemoire();
   }
   const dureeTotale = performance.now() - t0;
-  const moyenne = dureeTotale / refsEnAttente.length;
-  statutReferences.textContent = `${references.length} référence(s) calculée(s). Total ${(dureeTotale / 1000).toFixed(2)} s — moyenne ${moyenne.toFixed(0)} ms/image.`;
+  const moyenne = refsEnAttente.length ? dureeTotale / refsEnAttente.length : 0;
+  const nbManuel = references.filter(r => r.source === 'manuel').length;
+  statutReferences.textContent = `${nbManuel} référence(s) manuelle(s) calculée(s). Total ${(dureeTotale / 1000).toFixed(2)} s — moyenne ${moyenne.toFixed(0)} ms/image.`;
   statutReferences.className = 'statut ok';
   inputTest.disabled = references.length === 0;
   btnCalculerReferences.disabled = false;
 };
 
-// ---- etape 3 : test d'une nouvelle photo ----
+// ---- etape 3 : test d'une nouvelle photo (comparaison a TOUTES les references en memoire,
+// catalogue + manuelles confondus) ----
 inputTest.onchange = async () => {
   const file = inputTest.files[0];
   if (!file) return;
@@ -334,7 +551,7 @@ inputTest.onchange = async () => {
     <div class="carteResultat${i === 0 ? ' top1' : ''}">
       <img src="${r.dataUrl}">
       <div class="infosResultat">
-        <div class="rang">TOP ${i + 1}</div>
+        <div class="rang">TOP ${i + 1}${r.source === 'catalogue' ? ' · catalogue' : ' · manuel'}</div>
         <div class="nomProduit">${r.id}</div>
         <div class="score">similarité : ${(r.score * 100).toFixed(1)}% (${r.score.toFixed(4)})</div>
       </div>
